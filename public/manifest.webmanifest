@@ -1,0 +1,15 @@
+{
+  "name": "Quake Blast",
+  "short_name": "Quake Blast",
+  "description": "A jungle wave-defense FPS: build gold-brick bases, then blast the vampire rabbits and eagles that come for them.",
+  "start_url": ".",
+  "scope": ".",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#0a0a0f",
+  "theme_color": "#0a0a0f",
+  "icons": [
+    { "src": "apple-touch-icon.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}
