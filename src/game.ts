@@ -111,7 +111,7 @@ export class Game {
           }))
     );
     this.scene.add(this.player.controls.object);
-    this.weapon = new WeaponView(this.camera, this.scene);
+    this.weapon = new WeaponView(this.camera, this.scene, this.isTouch);
 
     this.loadLevel(initialLevelIndex());
 
@@ -364,6 +364,11 @@ export class Game {
     }
 
     let playerHit = false;
+
+    // Once the ground horde is dead, eagles stop perching and press the attack —
+    // otherwise the last enemy can sit in a treetop and the wave never finishes.
+    const groundAlive = this.monsters.some((m) => m.alive);
+    for (const e of this.eagles) e.pressAttack = !groundAlive;
 
     // Rabbits and eagles share the same drive: aim at the nearest base, else the
     // player; each entity reports its own contact and carries its own dps/radius.

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { CONFIG } from './config';
 import { rockTexture, rockTextureTiled, noiseTexture, skyGradientTexture } from './textures';
+import { isTouchDevice } from './touch';
 import type { LevelHandle } from './level';
 
 /**
@@ -22,7 +23,6 @@ const SPRUCE_GREENS = [0x1d4a33, 0x24573b, 0x173d2a, 0x2c6344, 0x1a4530, 0x21503
 const SNOW_WHITE = 0xf4f8fc;
 const TRUNK_BROWN = 0x4a382a;
 const ICE_COLOR = 0xbfe4f5;
-const SNOWFLAKES = 2600;
 
 export function buildArctic(scene: THREE.Scene): LevelHandle {
   const { halfSize } = CONFIG.arena;
@@ -501,6 +501,9 @@ export function buildArctic(scene: THREE.Scene): LevelHandle {
   group.add(source);
 
   // --- Snowfall --------------------------------------------------------------
+  // The flakes are CPU-updated (positions rewritten + re-uploaded every frame),
+  // so tablets get a lighter storm.
+  const SNOWFLAKES = isTouchDevice() ? 1400 : 2600;
   const SNOW_R = bound * 1.8;
   const SNOW_H = 26;
   const snowPos = new Float32Array(SNOWFLAKES * 3);

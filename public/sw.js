@@ -6,7 +6,7 @@
  * change under the same name). Every successful same-origin GET is cached, so
  * after one full online session the game runs entirely offline.
  */
-const CACHE = 'quake-blast-v2';
+const CACHE = 'quake-blast-v3';
 const PRECACHE = ['./', 'index.html', 'icon.svg', 'manifest.webmanifest', 'apple-touch-icon.png'];
 
 self.addEventListener('install', (e) => {

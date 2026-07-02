@@ -37,7 +37,7 @@ export class WeaponView {
   private muzzle = new THREE.Object3D();
   private flash: THREE.Mesh;
   private flashMat: THREE.MeshBasicMaterial;
-  private flashLight: THREE.PointLight;
+  private flashLight: THREE.PointLight | null = null;
   private flashT = 0;
 
   private tracers: { mesh: THREE.Mesh; mat: THREE.MeshBasicMaterial; t: number }[] = [];
@@ -55,7 +55,13 @@ export class WeaponView {
   private tmpB = new THREE.Vector3();
   private idleT = 0;
 
-  constructor(private camera: THREE.PerspectiveCamera, scene: THREE.Scene) {
+  /**
+   * `lowPower` (touch devices): skip the muzzle PointLight. A dynamic point
+   * light adds per-fragment cost to EVERY lit material on screen, which tablet
+   * GPUs pay even while the light is at zero intensity — the sprite flash and
+   * tracers carry the effect there.
+   */
+  constructor(private camera: THREE.PerspectiveCamera, scene: THREE.Scene, lowPower = false) {
     this.buildBlaster();
     this.group.position.copy(BASE_POS);
     this.group.rotation.y = BASE_YAW;
@@ -74,8 +80,10 @@ export class WeaponView {
     this.flash = new THREE.Mesh(new THREE.PlaneGeometry(0.22, 0.22), this.flashMat);
     this.flash.visible = false;
     this.muzzle.add(this.flash);
-    this.flashLight = new THREE.PointLight(0xaef0ff, 0, 8, 2);
-    this.muzzle.add(this.flashLight);
+    if (!lowPower) {
+      this.flashLight = new THREE.PointLight(0xaef0ff, 0, 8, 2);
+      this.muzzle.add(this.flashLight);
+    }
 
     // World-space effect pools (tracers/impacts live in the scene, not the camera).
     const tracerGeo = new THREE.BoxGeometry(0.02, 0.02, 1);
@@ -192,9 +200,8 @@ export class WeaponView {
       this.flashT -= dt;
       const k = Math.max(0, this.flashT / FLASH_TIME);
       this.flashMat.opacity = k;
-      this.flashLight.intensity = 26 * k;
       this.flash.visible = this.flashT > 0;
-      if (this.flashT <= 0) this.flashLight.intensity = 0;
+      if (this.flashLight) this.flashLight.intensity = this.flashT > 0 ? 26 * k : 0;
     }
 
     for (const tr of this.tracers) {
@@ -223,7 +230,7 @@ export class WeaponView {
     this.flash.visible = true;
     this.flash.rotation.z = Math.random() * Math.PI * 2;
     this.flashMat.opacity = 1;
-    this.flashLight.intensity = 26;
+    if (this.flashLight) this.flashLight.intensity = 26;
 
     const from = this.muzzle.getWorldPosition(this.tmpA);
     const tr = this.tracers[this.tracerIdx];
