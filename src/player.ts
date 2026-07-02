@@ -9,13 +9,46 @@ export interface TouchInput {
   jumpHeld: boolean;
 }
 
+/**
+ * The world data the player moves through. Injected (and re-injected on level
+ * change) by Game so Player never reaches into level internals.
+ */
+export interface PlayerWorld {
+  bound: number;
+  heightAt: (x: number, z: number) => number;
+  /** Water footprint that blocks walking, or null when it's frozen/walkable. */
+  pond: { x: number; z: number; r: number } | null;
+  /** Ground grip at (x,z): 0 = full traction, 1 = sheet ice. */
+  slipAt: (x: number, z: number) => number;
+}
+
 const TOUCH_LOOK_SPEED = 0.0045; // radians of look per px of touch drag
+
+// Camera-feel constants (purely perceptual; speeds/physics live in CONFIG).
+const BOB_FREQ = 2.4; // stride cycles per unit of horizontal speed
+const BOB_HEIGHT = 0.05; // vertical bounce per step at full speed
+const BOB_ROLL = 0.01; // rhythmic roll accompanying the steps (radians)
+const STRAFE_LEAN = 0.03; // lean into a strafe (radians at full input)
+const LEAN_EASE = 9; // how fast the lean follows input
+const LAND_DIP_SCALE = 0.02; // crouch dip per unit of landing speed
+const LAND_DIP_MAX = 0.34; // hardest possible landing dip
+const LAND_RECOVER = 7; // dip recovery rate (per second, exponential)
+const BASE_FOV = 75;
+const RUN_FOV = 3; // FOV widening at full run speed
+const SPRINT_FOV = 6; // extra widening while sprinting
+const FOV_EASE = 7;
+const RECOIL_PITCH = 0.006; // upward camera kick per shot (radians)
 
 /**
  * First-person player: pointer-lock mouse look + WASD movement with wall
  * clamping, a hitscan weapon, and a ground-aim ray used to place bases during
  * the build phase. The camera IS the player; movement is applied to the
  * controls object (camera rig).
+ *
+ * Movement carries physical weight cues: velocity + damping locomotion, a
+ * sprint (Shift), reduced air control while jumping, stride head-bob, a lean
+ * into strafes, a crouch dip on hard landings, speed-widened FOV, recoil kick
+ * when firing, and near-zero traction on ice (see PlayerWorld.slipAt).
  *
  * On touch devices there is no pointer lock: Game sets `touchPlaying` when the
  * player taps play, `touch` supplies analog movement/jump, and `applyLook()`
@@ -30,6 +63,17 @@ export class Player {
   /** Touch-mode "in gameplay" flag (pointer lock's stand-in), set by Game. */
   touchPlaying = false;
 
+  /** Stride cycle + normalized speed, read by the weapon view to sync its bob. */
+  bobPhase = 0;
+  speedNorm = 0;
+
+  private world: PlayerWorld = {
+    bound: CONFIG.arena.halfSize - 0.5,
+    heightAt: () => 0,
+    pond: null,
+    slipAt: () => 0,
+  };
+
   private velocity = new THREE.Vector3();
   private keys = new Set<string>();
   private cooldown = 0;
@@ -38,13 +82,13 @@ export class Player {
   private footY = 0; // ground-height of the player's feet (drives jump/gravity)
   private vVel = 0; // vertical velocity
   private onGround = true;
+  private lean = 0; // current camera roll (strafe lean + step roll)
+  private dip = 0; // landing crouch dip, recovering toward 0
+  private fov = BASE_FOV;
 
   constructor(
     private camera: THREE.PerspectiveCamera,
     domElement: HTMLElement,
-    private bound: number,
-    private groundHeight: (x: number, z: number) => number = () => 0,
-    private pond: { x: number; z: number; r: number } | null = null,
     private solids: () => { x: number; z: number; half: number; top: number; bottom: number }[] = () => []
   ) {
     this.controls = new PointerLockControls(camera, domElement);
@@ -52,6 +96,25 @@ export class Player {
 
     window.addEventListener('keydown', (e) => this.keys.add(e.code));
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
+  }
+
+  /** Swap in a new level's world data (terrain, bound, water, grip). */
+  setWorld(world: PlayerWorld): void {
+    this.world = world;
+  }
+
+  /** Reset to the spawn point with all motion state cleared (level load/restart). */
+  resetPose(): void {
+    const z = CONFIG.arena.halfSize * 0.7;
+    this.velocity.set(0, 0, 0);
+    this.vVel = 0;
+    this.footY = this.world.heightAt(0, z);
+    this.onGround = true;
+    this.lean = 0;
+    this.dip = 0;
+    this.bobPhase = 0;
+    this.speedNorm = 0;
+    this.camera.position.set(0, this.footY + CONFIG.player.eyeHeight, z);
   }
 
   get position(): THREE.Vector3 {
@@ -77,15 +140,24 @@ export class Player {
     this.camera.quaternion.setFromEuler(this.euler);
   }
 
-  /** Returns true if a shot was fired (respects cooldown + active gameplay). */
-  tryShoot(targets: THREE.Object3D[]): THREE.Intersection | null {
-    if (!this.active || this.cooldown > 0) return null;
+  /**
+   * Attempt a shot. `fired` is true when the trigger actually broke (cooldown
+   * elapsed + in gameplay) so the caller can play fire effects even on a miss;
+   * `hit` is the first intersection with the given targets, if any.
+   */
+  tryShoot(targets: THREE.Object3D[]): { fired: boolean; hit: THREE.Intersection | null } {
+    if (!this.active || this.cooldown > 0) return { fired: false, hit: null };
     this.cooldown = CONFIG.weapon.cooldown;
+
+    // Recoil: the muzzle climbs a touch with every shot.
+    this.euler.setFromQuaternion(this.camera.quaternion);
+    this.euler.x = THREE.MathUtils.clamp(this.euler.x + RECOIL_PITCH, -Math.PI / 2 + 0.05, Math.PI / 2 - 0.05);
+    this.camera.quaternion.setFromEuler(this.euler);
 
     this.raycaster.setFromCamera(new THREE.Vector2(0, 0), this.camera);
     this.raycaster.far = CONFIG.weapon.range;
     const hits = this.raycaster.intersectObjects(targets, true);
-    return hits.length > 0 ? hits[0] : null;
+    return { fired: true, hit: hits.length > 0 ? hits[0] : null };
   }
 
   /**
@@ -109,37 +181,47 @@ export class Player {
     this.cooldown = Math.max(0, this.cooldown - dt);
     if (!this.active) return;
 
-    const { moveSpeed, damping, radius } = CONFIG.player;
+    const { moveSpeed, damping, radius, sprintMultiplier, airControl } = CONFIG.player;
 
     // Input → desired direction in camera-local space (WASD + touch joystick).
     const kForward = (this.keys.has('KeyW') ? 1 : 0) - (this.keys.has('KeyS') ? 1 : 0);
     const kRight = (this.keys.has('KeyD') ? 1 : 0) - (this.keys.has('KeyA') ? 1 : 0);
     const forward = THREE.MathUtils.clamp(kForward + (this.touch?.moveY ?? 0), -1, 1);
     const right = THREE.MathUtils.clamp(kRight + (this.touch?.moveX ?? 0), -1, 1);
+    const sprint = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight');
 
-    this.velocity.x -= this.velocity.x * damping * dt;
-    this.velocity.z -= this.velocity.z * damping * dt;
-    this.velocity.z -= forward * moveSpeed * dt;
-    this.velocity.x -= right * moveSpeed * dt;
+    // Traction model: ice kills both grip (damping) and push-off (acceleration),
+    // so momentum carries you across it; airborne you can barely steer.
+    const slip = this.onGround ? this.world.slipAt(this.camera.position.x, this.camera.position.z) : 0;
+    const grip = 1 - 0.88 * slip;
+    const accel =
+      moveSpeed * (sprint ? sprintMultiplier : 1) * (this.onGround ? 1 - 0.55 * slip : airControl);
+
+    this.velocity.x -= this.velocity.x * damping * grip * dt;
+    this.velocity.z -= this.velocity.z * damping * grip * dt;
+    this.velocity.z -= forward * accel * dt;
+    this.velocity.x -= right * accel * dt;
 
     this.controls.moveRight(-this.velocity.x * dt);
     this.controls.moveForward(-this.velocity.z * dt);
 
     // Clamp inside the arena walls.
-    const limit = this.bound - radius;
+    const limit = this.world.bound - radius;
     this.camera.position.x = THREE.MathUtils.clamp(this.camera.position.x, -limit, limit);
     this.camera.position.z = THREE.MathUtils.clamp(this.camera.position.z, -limit, limit);
 
-    // Stop at the pond's bank instead of striding across the water.
-    if (this.pond) {
-      const dx = this.camera.position.x - this.pond.x;
-      const dz = this.camera.position.z - this.pond.z;
+    // Stop at the pond's bank instead of striding across the water. (A frozen
+    // pond passes null here and is simply walkable ice.)
+    const pond = this.world.pond;
+    if (pond) {
+      const dx = this.camera.position.x - pond.x;
+      const dz = this.camera.position.z - pond.z;
       const d = Math.hypot(dx, dz);
-      const rr = this.pond.r + radius;
+      const rr = pond.r + radius;
       if (d < rr) {
         const inv = 1 / (d || 1);
-        this.camera.position.x = this.pond.x + dx * inv * rr;
-        this.camera.position.z = this.pond.z + dz * inv * rr;
+        this.camera.position.x = pond.x + dx * inv * rr;
+        this.camera.position.z = pond.z + dz * inv * rr;
       }
     }
 
@@ -166,7 +248,7 @@ export class Player {
     }
 
     // Support height: the terrain, or the tallest brick top you can stand on.
-    let support = this.groundHeight(this.camera.position.x, this.camera.position.z);
+    let support = this.world.heightAt(this.camera.position.x, this.camera.position.z);
     for (const b of bricks) {
       if (b.top > this.footY + STEP) continue;
       if (
@@ -186,10 +268,36 @@ export class Player {
     this.vVel -= CONFIG.player.gravity * dt;
     this.footY += this.vVel * dt;
     if (this.footY <= support) {
+      if (!this.onGround) {
+        // Landing: the knees give a little, scaled by how hard you came down.
+        const impact = Math.max(0, -this.vVel - 5);
+        this.dip = Math.min(LAND_DIP_MAX, this.dip + impact * LAND_DIP_SCALE);
+      }
       this.footY = support; // landed / walking
       this.vVel = 0;
       this.onGround = true;
     }
-    this.camera.position.y = this.footY + CONFIG.player.eyeHeight;
+
+    // --- Camera feel: stride bob, landing dip, strafe lean, speed FOV -------
+    const hSpeed = Math.hypot(this.velocity.x, this.velocity.z);
+    this.speedNorm = Math.min(1, hSpeed / 3.2);
+    if (this.onGround && this.speedNorm > 0.04) this.bobPhase += dt * hSpeed * BOB_FREQ;
+    const bobY = this.onGround ? Math.abs(Math.sin(this.bobPhase)) * BOB_HEIGHT * this.speedNorm : 0;
+    this.dip *= Math.exp(-LAND_RECOVER * dt);
+    this.camera.position.y = this.footY + CONFIG.player.eyeHeight + bobY - this.dip;
+
+    const targetLean = -right * STRAFE_LEAN + Math.sin(this.bobPhase) * BOB_ROLL * this.speedNorm;
+    this.lean += (targetLean - this.lean) * Math.min(1, LEAN_EASE * dt);
+    this.euler.setFromQuaternion(this.camera.quaternion);
+    this.euler.z = this.lean;
+    this.camera.quaternion.setFromEuler(this.euler);
+
+    const targetFov =
+      BASE_FOV + this.speedNorm * RUN_FOV + (sprint && this.speedNorm > 0.3 ? SPRINT_FOV : 0);
+    this.fov += (targetFov - this.fov) * Math.min(1, FOV_EASE * dt);
+    if (Math.abs(this.camera.fov - this.fov) > 0.01) {
+      this.camera.fov = this.fov;
+      this.camera.updateProjectionMatrix();
+    }
   }
 }

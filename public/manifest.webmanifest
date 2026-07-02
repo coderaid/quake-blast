@@ -1,7 +1,7 @@
 {
   "name": "Quake Blast",
   "short_name": "Quake Blast",
-  "description": "A jungle wave-defense FPS: build gold-brick bases, then blast the vampire rabbits and eagles that come for them.",
+  "description": "A wave-defense FPS across jungle and arctic arenas: build gold-brick bases, then blast the vampire rabbits and eagles that come for them.",
   "start_url": ".",
   "scope": ".",
   "display": "fullscreen",

@@ -3,6 +3,10 @@
  * monsters-left), bottom stats (HP / bases), damage flash, and the
  * click-to-play / victory / defeat overlays. Kept out of the WebGL canvas so
  * it's cheap and easy to restyle.
+ *
+ * The start overlay carries a level-select row (one button per level); the
+ * victory overlay advances to the next level. Both resolve through the two
+ * callbacks wired via onPlayClick / onLevelSelect.
  */
 export interface HudState {
   phase: 'build' | 'assault' | 'won' | 'lost';
@@ -12,6 +16,7 @@ export interface HudState {
   basesAlive: number;
   basesTotal: number;
   monstersLeft: number;
+  levelName: string;
 }
 
 export class Hud {
@@ -21,8 +26,10 @@ export class Hud {
   private basesEl: HTMLElement;
   private overlayEl: HTMLElement;
   private damageFlash: HTMLElement;
+  private playCb: (() => void) | null = null;
+  private levelCb: ((index: number) => void) | null = null;
 
-  constructor(root: HTMLElement, private isTouch = false) {
+  constructor(root: HTMLElement, private isTouch = false, private levelNames: string[] = []) {
     root.insertAdjacentHTML(
       'beforeend',
       `
@@ -73,6 +80,13 @@ export class Hud {
         #hud-overlay .cta { font-size: 22px; opacity: 1; margin-top: 16px; animation: pulse 1.2s infinite; }
         @keyframes pulse { 50% { opacity: 0.4; } }
         #hud-overlay.hidden { display: none; }
+        #lvl-row { display: flex; gap: 12px; margin: 6px 0; }
+        #lvl-row button {
+          font: 700 16px/1 monospace; letter-spacing: 2px; padding: 12px 26px;
+          background: rgba(255,255,255,0.06); color: #9cf; cursor: pointer;
+          border: 1px solid #46a; border-radius: 6px;
+        }
+        #lvl-row button.sel { background: #1c3a5e; color: #fff; border-color: #6cf; }
       </style>
     `
     );
@@ -83,11 +97,26 @@ export class Hud {
     this.basesEl = root.querySelector('#hud-bases')!;
     this.overlayEl = root.querySelector('#hud-overlay')!;
     this.damageFlash = root.querySelector('#hud-damage')!;
-    this.showStart();
+
+    // One dispatcher: level buttons pick (and start) a level, anywhere else plays.
+    this.overlayEl.addEventListener('click', (e) => {
+      const btn = (e.target as HTMLElement).closest('button[data-lvl]') as HTMLElement | null;
+      if (btn) {
+        this.levelCb?.(Number(btn.dataset.lvl));
+        return;
+      }
+      this.playCb?.();
+    });
+
+    this.showStart(0);
   }
 
   onPlayClick(cb: () => void): void {
-    this.overlayEl.addEventListener('click', cb);
+    this.playCb = cb;
+  }
+
+  onLevelSelect(cb: (index: number) => void): void {
+    this.levelCb = cb;
   }
 
   setLocked(locked: boolean): void {
@@ -104,8 +133,8 @@ export class Hud {
       const verb = this.isTouch ? 'tap FIRE to build' : 'click to build';
       this.subEl.textContent =
         s.budget > 0
-          ? `Aim at the ground, ${verb} · ${s.budget} base${s.budget === 1 ? '' : 's'} left`
-          : 'All bases placed — brace for the assault!';
+          ? `${s.levelName} · Aim at the ground, ${verb} · ${s.budget} base${s.budget === 1 ? '' : 's'} left`
+          : `${s.levelName} · All bases placed — brace for the assault!`;
     } else if (s.phase === 'assault') {
       this.bannerEl.textContent = `DEFEND! — ${s.monstersLeft} monster${s.monstersLeft === 1 ? '' : 's'} left`;
       this.bannerEl.style.color = '#f66';
@@ -123,25 +152,32 @@ export class Hud {
     setTimeout(() => (this.damageFlash.style.opacity = '0'), 90);
   }
 
-  showStart(): void {
+  showStart(levelIndex: number): void {
     this.overlayEl.classList.remove('hidden');
     const controls = this.isTouch
       ? 'Left thumb: move · right side: drag to look · FIRE to build, then to shoot · JUMP to jump'
-      : 'WASD move · mouse look · click to build, then to shoot';
+      : 'WASD move · SHIFT sprint · mouse look · click to build, then to shoot';
+    const buttons = this.levelNames
+      .map((n, i) => `<button data-lvl="${i}" class="${i === levelIndex ? 'sel' : ''}">${n}</button>`)
+      .join('');
     this.overlayEl.innerHTML = `
       <h1 style="color:#6cf">Quake Blast</h1>
       <p>Build phase: place bases. Then survive the assault and keep them standing.</p>
+      ${buttons ? `<div id="lvl-row">${buttons}</div>` : ''}
       <p style="opacity:0.7">${controls}</p>
       <p class="cta">${this.isTouch ? 'Tap' : 'Click'} to play</p>`;
   }
 
-  showVictory(saved: number, total: number): void {
+  showVictory(saved: number, total: number, nextLevelName: string | null): void {
     this.overlayEl.classList.remove('hidden');
     const perfect = saved === total;
+    const cta = nextLevelName
+      ? `${this.isTouch ? 'Tap' : 'Click'} for the next level — ${nextLevelName}`
+      : `All levels cleared! ${this.isTouch ? 'Tap' : 'Click'} to start over`;
     this.overlayEl.innerHTML = `
       <h1 style="color:#6f6">VICTORY</h1>
       <p>${perfect ? 'Flawless — every base survived!' : `You saved ${saved} of ${total} bases.`}</p>
-      <p class="cta">${this.isTouch ? 'Tap' : 'Click'} to play again</p>`;
+      <p class="cta">${cta}</p>`;
   }
 
   showDefeat(reason: string): void {

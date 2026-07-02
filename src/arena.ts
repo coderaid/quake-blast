@@ -2,10 +2,19 @@ import * as THREE from 'three';
 import { Water } from 'three/examples/jsm/objects/Water.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { CONFIG } from './config';
-import { barkTexture, leafTexture, rockTexture, rockTextureTiled } from './textures';
+import {
+  barkTexture,
+  leafTexture,
+  rockTexture,
+  rockTextureTiled,
+  noiseTexture,
+  skyGradientTexture,
+  waterNormalsTexture,
+} from './textures';
+import type { LevelHandle } from './level';
 
 /**
- * Builds the Level 1 jungle: a flat central clearing (the playable build area),
+ * Builds the JUNGLE level: a flat central clearing (the playable build area),
  * a thick multi-ring treeline receding into haze, and a steep climbable rocky
  * hill on the north edge with a waterfall that hugs the rock face and spills
  * into a pond — all inside the playable bound so the player can reach and climb.
@@ -15,22 +24,19 @@ import { barkTexture, leafTexture, rockTexture, rockTextureTiled } from './textu
  * at a handful of draw calls. Per-instance colors give foliage variety and a
  * distance-fade tint so far trees melt into the fog.
  *
- * Returns:
- *  - `bound`    : the clearing half-extent movement clamps against.
- *  - `update`   : per-frame hook the game loop calls to animate the water.
- *  - `perches`  : tree-top points eagles roost on.
- *  - `heightAt` : terrain elevation at (x,z); the clearing is 0, the hill rises.
- *  - `pond`     : the pond's footprint so the player stops at its bank.
+ * Everything is parented to one group so the level can be torn down when the
+ * player advances to the next one; the level also owns its atmosphere (fog,
+ * sky color) — see LevelHandle in level.ts for the returned contract.
  */
-export function buildArena(scene: THREE.Scene): {
-  bound: number;
-  update: (dt: number) => void;
-  perches: THREE.Vector3[];
-  heightAt: (x: number, z: number) => number;
-  pond: { x: number; z: number; r: number };
-} {
+export function buildJungle(scene: THREE.Scene): LevelHandle {
   const { halfSize } = CONFIG.arena;
   const bound = halfSize - 0.5;
+  const group = new THREE.Group();
+  scene.add(group);
+
+  // --- Atmosphere (level-owned) --------------------------------------------
+  scene.background = new THREE.Color(0x9fc6ea); // sky-blue horizon (sky dome covers the rest)
+  scene.fog = new THREE.Fog(0xbcdcf2, 50, halfSize * 3.8);
 
   // --- Terrain height field ----------------------------------------------
   const HILL_CX = 0;
@@ -47,7 +53,7 @@ export function buildArena(scene: THREE.Scene): {
   const pond = { x: 0, z: -7, r: 5 };
 
   // --- Ground -------------------------------------------------------------
-  const groundTex = makeNoiseTexture(['#3a5f29', '#46763a', '#314f24', '#5a4a2c'], 256);
+  const groundTex = noiseTexture(['#3a5f29', '#46763a', '#314f24', '#5a4a2c'], 256);
   groundTex.wrapS = groundTex.wrapT = THREE.RepeatWrapping;
   groundTex.repeat.set(26, 26);
   const ground = new THREE.Mesh(
@@ -57,9 +63,9 @@ export function buildArena(scene: THREE.Scene): {
   ground.rotation.x = -Math.PI / 2;
   ground.position.y = -0.05;
   ground.receiveShadow = true;
-  scene.add(ground);
+  group.add(ground);
 
-  const dirtTex = makeNoiseTexture(['#6b5634', '#7a623c', '#5e4c2e', '#534228'], 128);
+  const dirtTex = noiseTexture(['#6b5634', '#7a623c', '#5e4c2e', '#534228'], 128);
   dirtTex.wrapS = dirtTex.wrapT = THREE.RepeatWrapping;
   dirtTex.repeat.set(6, 6);
   const clearing = new THREE.Mesh(
@@ -69,10 +75,10 @@ export function buildArena(scene: THREE.Scene): {
   clearing.rotation.x = -Math.PI / 2;
   clearing.position.set(0, 0.0, 10);
   clearing.receiveShadow = true;
-  scene.add(clearing);
+  group.add(clearing);
 
   // --- Lighting -----------------------------------------------------------
-  scene.add(new THREE.HemisphereLight(0xbfe6ff, 0x2c4a1e, 0.9));
+  group.add(new THREE.HemisphereLight(0xbfe6ff, 0x2c4a1e, 0.9));
   const sun = new THREE.DirectionalLight(0xfff2d0, 1.3);
   sun.position.set(25, 45, 18);
   sun.castShadow = true;
@@ -84,14 +90,20 @@ export function buildArena(scene: THREE.Scene): {
   sun.shadow.camera.far = 150;
   sun.shadow.bias = -0.0005;
   sun.shadow.normalBias = 0.5;
-  scene.add(sun);
+  group.add(sun);
+  group.add(sun.target);
 
   // --- Sky dome (blue at the zenith, pale at the horizon) -----------------
   const sky = new THREE.Mesh(
     new THREE.SphereGeometry(halfSize * 7, 24, 16),
-    new THREE.MeshBasicMaterial({ map: makeSkyGradient(), side: THREE.BackSide, fog: false, depthWrite: false })
+    new THREE.MeshBasicMaterial({
+      map: skyGradientTexture('#1e6fd0', '#4f9fe0', '#a9d3ef'),
+      side: THREE.BackSide,
+      fog: false,
+      depthWrite: false,
+    })
   );
-  scene.add(sky);
+  group.add(sky);
 
   // --- Isolated puffy clouds (clusters of white blobs that drift) ---------
   const cloudMat = new THREE.MeshStandardMaterial({
@@ -117,7 +129,7 @@ export function buildArena(scene: THREE.Scene): {
     const a = Math.random() * Math.PI * 2;
     const rad = halfSize * 1.2 + Math.random() * halfSize * 3;
     cloud.position.set(Math.cos(a) * rad, 34 + Math.random() * 18, Math.sin(a) * rad);
-    scene.add(cloud);
+    group.add(cloud);
     clouds.push(cloud);
   }
   const cloudWrap = halfSize * 5;
@@ -146,7 +158,7 @@ export function buildArena(scene: THREE.Scene): {
   hill.position.set(HILL_CX, 0, HILL_CZ);
   hill.receiveShadow = true;
   hill.castShadow = true;
-  scene.add(hill);
+  group.add(hill);
 
   const mossMat = new THREE.MeshStandardMaterial({ color: 0x3c6b2f, roughness: 1, flatShading: true });
   for (let i = 0; i < 30; i++) {
@@ -161,7 +173,7 @@ export function buildArena(scene: THREE.Scene): {
     rock.scale.set(s, s * (0.6 + Math.random() * 0.5), s);
     rock.rotation.set(Math.random(), Math.random(), Math.random());
     rock.castShadow = true;
-    scene.add(rock);
+    group.add(rock);
   }
   // Rounded boulders framing the falls on either side — clear of the water channel.
   for (const sx of [-1, 1]) {
@@ -174,7 +186,7 @@ export function buildArena(scene: THREE.Scene): {
       rock.scale.set(s, s * (0.75 + Math.random() * 0.5), s);
       rock.rotation.set(Math.random(), Math.random(), Math.random());
       rock.castShadow = true;
-      scene.add(rock);
+      group.add(rock);
     }
   }
 
@@ -186,7 +198,7 @@ export function buildArena(scene: THREE.Scene): {
   const fernGeo = new THREE.ConeGeometry(0.7, 1.4, 5);
   const bushGeo = new THREE.IcosahedronGeometry(0.9, 0);
 
-  const fogColor = new THREE.Color(0xbcdcf2); // matches scene fog / sky horizon (game.ts)
+  const fogColor = new THREE.Color(0xbcdcf2); // matches this level's fog / sky horizon
   const maxR = bound * 3.8;
   const greenColors = [0x2f7d32, 0x3f9142, 0x276b2b, 0x4caf50, 0x1f5a23, 0x356d2a, 0x4e7a2a].map(
     (c) => new THREE.Color(c)
@@ -329,7 +341,7 @@ export function buildArena(scene: THREE.Scene): {
     mesh.castShadow = castShadow;
     mesh.receiveShadow = true;
     mesh.frustumCulled = false; // instances span the whole map; avoid false culling
-    scene.add(mesh);
+    group.add(mesh);
   };
 
   // Foliage sways in the wind via a shared time uniform injected into the shader.
@@ -384,7 +396,7 @@ export function buildArena(scene: THREE.Scene): {
   buildInstanced(bushGeo, bushI, false, bushMat);
 
   // --- Pond (reflective/refractive Water) ---------------------------------
-  const waterNormals = makeWaterNormals();
+  const waterNormals = waterNormalsTexture();
   const pondWater = new Water(new THREE.CircleGeometry(pond.r, 48), {
     textureWidth: 512,
     textureHeight: 512,
@@ -397,7 +409,7 @@ export function buildArena(scene: THREE.Scene): {
   });
   pondWater.rotation.x = -Math.PI / 2;
   pondWater.position.set(pond.x, 0.1, pond.z);
-  scene.add(pondWater);
+  group.add(pondWater);
   const pondUniforms = (pondWater.material as THREE.ShaderMaterial).uniforms;
 
   for (let i = 0; i < 16; i++) {
@@ -406,7 +418,7 @@ export function buildArena(scene: THREE.Scene): {
     rock.position.set(pond.x + Math.cos(a) * (pond.r + 0.6), 0.3, pond.z + Math.sin(a) * (pond.r + 0.6));
     rock.scale.set(1 + Math.random(), 0.6 + Math.random() * 0.6, 1 + Math.random());
     rock.rotation.set(Math.random(), Math.random(), Math.random());
-    scene.add(rock);
+    group.add(rock);
   }
 
   // --- Waterfall ----------------------------------------------------------
@@ -416,7 +428,7 @@ export function buildArena(scene: THREE.Scene): {
   const fallLen = FALL_Z1 - FALL_Z0;
   const waterTex = makeWaterTexture();
   waterTex.repeat.set(1, fallLen / 3);
-  const fallNormals = makeWaterNormals();
+  const fallNormals = waterNormalsTexture();
   fallNormals.repeat.set(1, fallLen / 3);
   const fallsGeo = new THREE.PlaneGeometry(6, fallLen, 4, 60);
   fallsGeo.rotateX(-Math.PI / 2);
@@ -440,7 +452,7 @@ export function buildArena(scene: THREE.Scene): {
     })
   );
   falls.position.set(0, 0, fallCenterZ);
-  scene.add(falls);
+  group.add(falls);
 
   const source = new THREE.Mesh(
     new THREE.CircleGeometry(3, 28),
@@ -448,13 +460,41 @@ export function buildArena(scene: THREE.Scene): {
   );
   source.rotation.x = -Math.PI / 2;
   source.position.set(0, PLATEAU_H + 0.14, -30); // flat pool on the summit plateau
-  scene.add(source);
+  group.add(source);
 
   const sprayMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.5, depthWrite: false });
   const spray = new THREE.Mesh(new THREE.CircleGeometry(2.4, 24), sprayMat);
   spray.rotation.x = -Math.PI / 2;
   spray.position.set(0, 0.14, -12.5);
-  scene.add(spray);
+  group.add(spray);
+
+  // --- Airborne motes (pollen/insects drifting in the light) ---------------
+  // A cheap volumetric cue: hundreds of tiny bright points slowly circulating
+  // over the clearing sell "humid air" far better than fog alone.
+  const MOTES = 500;
+  const motePos = new Float32Array(MOTES * 3);
+  const moteSeed = new Float32Array(MOTES);
+  for (let i = 0; i < MOTES; i++) {
+    motePos[i * 3] = (Math.random() * 2 - 1) * bound;
+    motePos[i * 3 + 1] = 0.3 + Math.random() * 7;
+    motePos[i * 3 + 2] = (Math.random() * 2 - 1) * bound;
+    moteSeed[i] = Math.random() * Math.PI * 2;
+  }
+  const moteGeo = new THREE.BufferGeometry();
+  moteGeo.setAttribute('position', new THREE.BufferAttribute(motePos, 3));
+  const motes = new THREE.Points(
+    moteGeo,
+    new THREE.PointsMaterial({
+      color: 0xfff7d8,
+      size: 0.06,
+      transparent: true,
+      opacity: 0.55,
+      depthWrite: false,
+      sizeAttenuation: true,
+    })
+  );
+  motes.frustumCulled = false;
+  group.add(motes);
 
   let t = 0;
   const update = (dt: number): void => {
@@ -469,9 +509,27 @@ export function buildArena(scene: THREE.Scene): {
       c.position.x += dt * 0.7; // slow drift
       if (c.position.x > cloudWrap) c.position.x = -cloudWrap;
     }
+    // Motes wander on slow per-point sine paths (no allocation, one attribute upload).
+    const p = moteGeo.attributes.position.array as Float32Array;
+    for (let i = 0; i < MOTES; i++) {
+      const s = moteSeed[i];
+      p[i * 3] += Math.sin(t * 0.6 + s) * dt * 0.35;
+      p[i * 3 + 1] += Math.cos(t * 0.45 + s * 1.7) * dt * 0.18;
+      p[i * 3 + 2] += Math.cos(t * 0.5 + s) * dt * 0.35;
+    }
+    moteGeo.attributes.position.needsUpdate = true;
   };
 
-  return { bound, update, perches, heightAt, pond };
+  return {
+    group,
+    bound,
+    update,
+    perches,
+    heightAt,
+    pond,
+    pondBlocksMovement: true, // liquid water — the bank stops you
+    slipAt: () => 0, // jungle floor always has grip
+  };
 }
 
 /** Vertical water streaks, tiled + scrolled for the falls. */
@@ -545,70 +603,5 @@ function makeLeafCardTexture(): THREE.CanvasTexture {
     ctx.fill();
     ctx.restore();
   }
-  return new THREE.CanvasTexture(c);
-}
-
-/** A procedural water normal map: gentle bluish wave perturbations, tileable. */
-function makeWaterNormals(): THREE.CanvasTexture {
-  const s = 256;
-  const c = document.createElement('canvas');
-  c.width = s;
-  c.height = s;
-  const ctx = c.getContext('2d')!;
-  ctx.fillStyle = 'rgb(128,128,255)'; // flat normal
-  ctx.fillRect(0, 0, s, s);
-  for (let i = 0; i < 48; i++) {
-    const x = Math.random() * s;
-    const y = Math.random() * s;
-    const r = 10 + Math.random() * 45;
-    const ang = Math.random() * Math.PI * 2;
-    const nx = Math.round(128 + Math.cos(ang) * 60);
-    const ny = Math.round(128 + Math.sin(ang) * 60);
-    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
-    g.addColorStop(0, `rgb(${nx},${ny},255)`);
-    g.addColorStop(1, 'rgba(128,128,255,0)');
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  const tex = new THREE.CanvasTexture(c);
-  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  return tex;
-}
-
-/** Vertical sky gradient: deep blue at the zenith fading to pale at the horizon. */
-function makeSkyGradient(): THREE.CanvasTexture {
-  const c = document.createElement('canvas');
-  c.width = 16;
-  c.height = 256;
-  const ctx = c.getContext('2d')!;
-  const g = ctx.createLinearGradient(0, 0, 0, 256);
-  g.addColorStop(0, '#1e6fd0'); // zenith — deep blue
-  g.addColorStop(0.5, '#4f9fe0');
-  g.addColorStop(1, '#a9d3ef'); // horizon — pale blue (not white)
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, 16, 256);
-  return new THREE.CanvasTexture(c);
-}
-
-/** A mottled noise texture from a small palette — cheap ground/dirt variation. */
-function makeNoiseTexture(palette: string[], size: number): THREE.CanvasTexture {
-  const c = document.createElement('canvas');
-  c.width = size;
-  c.height = size;
-  const ctx = c.getContext('2d')!;
-  ctx.fillStyle = palette[0];
-  ctx.fillRect(0, 0, size, size);
-  const blotches = size * 6;
-  for (let i = 0; i < blotches; i++) {
-    ctx.fillStyle = palette[Math.floor(Math.random() * palette.length)];
-    ctx.globalAlpha = 0.25 + Math.random() * 0.5;
-    const r = 1 + Math.random() * (size / 18);
-    ctx.beginPath();
-    ctx.arc(Math.random() * size, Math.random() * size, r, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  ctx.globalAlpha = 1;
   return new THREE.CanvasTexture(c);
 }

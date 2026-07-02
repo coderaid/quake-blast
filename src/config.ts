@@ -12,6 +12,8 @@ export const CONFIG = {
     radius: 0.6, // collision radius against walls
     jumpSpeed: 12, // upward velocity of a jump (clears one brick with margin)
     gravity: 26, // downward acceleration
+    sprintMultiplier: 1.55, // hold Shift for this much extra acceleration
+    airControl: 0.35, // fraction of ground acceleration available mid-air
   },
   weapon: {
     damage: 34,

@@ -5,8 +5,9 @@ import { SSAOPass } from 'three/examples/jsm/postprocessing/SSAOPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { CONFIG } from './config';
-import { buildArena } from './arena';
+import { LEVELS, disposeLevel, type LevelHandle } from './level';
 import { Player } from './player';
+import { WeaponView } from './weapon';
 import { Monster } from './monster';
 import { Eagle } from './eagle';
 import { Building } from './building';
@@ -20,12 +21,18 @@ type Phase = 'build' | 'assault' | 'won' | 'lost';
  *
  *   build  → place bases against a countdown
  *   assault→ a finite wave of monsters storms in and attacks the nearest base
- *   won    → wave cleared with >=1 base standing
- *   lost   → all bases destroyed, or the player died
+ *   won    → wave cleared with >=1 base standing → advance to the next level
+ *   lost   → all bases destroyed, or the player died → retry the same level
  *
  * Owns the renderer, scene, the single rAF loop, and all game state. Systems
  * (Player/Monster/Building) expose update()/damage() and report back up here;
  * Game is the only place they are coordinated.
+ *
+ * Levels come from the LEVELS registry (level.ts). Each build populates the
+ * scene and hands back a LevelHandle; switching levels tears the old one down
+ * (disposeLevel) and re-injects the new world data into the player. The start
+ * overlay's level buttons and `?level=arctic` in the URL both jump straight to
+ * a specific level.
  */
 export class Game {
   private renderer: THREE.WebGLRenderer;
@@ -35,12 +42,15 @@ export class Game {
   private clock = new THREE.Clock();
 
   private player: Player;
+  private weapon: WeaponView;
   private hud: Hud;
   private touch: TouchControls | null = null;
   private isTouch = isTouchDevice();
-  private bound: number;
-  private arenaUpdate: (dt: number) => void;
-  private heightAt: (x: number, z: number) => number;
+
+  private levelIndex = 0;
+  private level!: LevelHandle;
+  private bound = CONFIG.arena.halfSize - 0.5;
+  private heightAt: (x: number, z: number) => number = () => 0;
 
   private phase: Phase = 'build';
   private buildTimer = CONFIG.build.duration;
@@ -55,8 +65,7 @@ export class Game {
   private eaglesSpawned = 0;
   private eagleSpawnTimer = 0;
 
-  // Tree-top sit points for eagles. Populated via setPerches() once the jungle
-  // exposes its tree positions; until then eagles simply soar and dive.
+  // Tree-top sit points for eagles, refreshed by each level's perches.
   private perches: THREE.Vector3[] = [];
 
   private ghost: THREE.Mesh;
@@ -66,6 +75,7 @@ export class Game {
   private ghostBaseY = 0;
   private stacks = new Map<string, number>(); // grid cell -> brick count (for stacking)
   private pond: { x: number; z: number; r: number } = { x: 0, z: 0, r: 0 };
+  private tmpDir = new THREE.Vector3();
 
   constructor(root: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -78,9 +88,6 @@ export class Game {
     this.renderer.toneMappingExposure = 1.1;
     root.appendChild(this.renderer.domElement);
 
-    this.scene.background = new THREE.Color(0x9fc6ea); // sky-blue horizon (sky dome covers the rest)
-    this.scene.fog = new THREE.Fog(0xbcdcf2, 50, CONFIG.arena.halfSize * 3.8);
-
     this.camera = new THREE.PerspectiveCamera(
       75,
       window.innerWidth / window.innerHeight,
@@ -88,18 +95,9 @@ export class Game {
       500
     );
 
-    const arena = buildArena(this.scene);
-    this.bound = arena.bound;
-    this.arenaUpdate = arena.update;
-    this.heightAt = arena.heightAt;
-    this.pond = arena.pond;
-    this.setPerches(arena.perches); // tree-tops the eagles can roost on
     this.player = new Player(
       this.camera,
       this.renderer.domElement,
-      this.bound,
-      this.heightAt,
-      arena.pond,
       // Live brick AABBs so the player can collide with and climb the stacks.
       () =>
         this.buildings
@@ -113,6 +111,9 @@ export class Game {
           }))
     );
     this.scene.add(this.player.controls.object);
+    this.weapon = new WeaponView(this.camera, this.scene);
+
+    this.loadLevel(initialLevelIndex());
 
     // Translucent placement preview, shown only during the build phase.
     const { size, height } = CONFIG.building;
@@ -125,7 +126,8 @@ export class Game {
     this.ghost.visible = false;
     this.scene.add(this.ghost);
 
-    this.hud = new Hud(root, this.isTouch);
+    this.hud = new Hud(root, this.isTouch, LEVELS.map((l) => l.name));
+    this.hud.showStart(this.levelIndex);
     if (this.isTouch) {
       this.touch = new TouchControls(root, {
         onLook: (dx, dy) => this.player.applyLook(dx, dy),
@@ -161,16 +163,34 @@ export class Game {
     this.composer.addPass(new OutputPass()); // applies tone mapping + sRGB
   }
 
+  /** Tear down the current level (if any), build the requested one, rewire systems. */
+  private loadLevel(index: number): void {
+    if (this.level) disposeLevel(this.scene, this.level);
+    this.levelIndex = index;
+    this.level = LEVELS[index].build(this.scene);
+    this.bound = this.level.bound;
+    this.heightAt = this.level.heightAt;
+    this.pond = this.level.pond;
+    this.setPerches(this.level.perches);
+    this.player.setWorld({
+      bound: this.bound,
+      heightAt: this.heightAt,
+      pond: this.level.pondBlocksMovement ? this.level.pond : null,
+      slipAt: this.level.slipAt,
+    });
+    this.player.resetPose();
+  }
+
   private wireInput(): void {
     this.hud.onPlayClick(() => {
-      if (this.phase === 'won' || this.phase === 'lost') this.restart();
-      if (this.touch) {
-        // No pointer lock on touch — a "playing" flag stands in for it.
-        this.player.touchPlaying = true;
-        this.hud.setLocked(true);
-      } else {
-        this.player.controls.lock();
-      }
+      if (this.phase === 'won') this.restart((this.levelIndex + 1) % LEVELS.length);
+      else if (this.phase === 'lost') this.restart();
+      this.beginPlay();
+    });
+    // A level button both selects the level and drops straight into it.
+    this.hud.onLevelSelect((index) => {
+      this.restart(index);
+      this.beginPlay();
     });
 
     this.player.controls.addEventListener('lock', () => this.hud.setLocked(true));
@@ -183,6 +203,16 @@ export class Game {
       if (this.phase === 'build') this.tryPlaceBuilding();
       else if (this.phase === 'assault') this.shoot();
     });
+  }
+
+  private beginPlay(): void {
+    if (this.touch) {
+      // No pointer lock on touch — a "playing" flag stands in for it.
+      this.player.touchPlaying = true;
+      this.hud.setLocked(true);
+    } else {
+      this.player.controls.lock();
+    }
   }
 
   /** FIRE button (touch): same context-sensitivity as left click. */
@@ -234,8 +264,8 @@ export class Game {
 
   /**
    * Hand the eagles their roosts. Expects tree-top sit points (a Vector3 per
-   * perchable tree, y = where an eagle should rest). Call this after the jungle
-   * is built, once it exposes its tree positions; safe to call with [] to clear.
+   * perchable tree, y = where an eagle should rest). Called with each level's
+   * perches on load; safe to call with [] to clear.
    */
   setPerches(points: THREE.Vector3[]): void {
     this.perches = points;
@@ -273,7 +303,17 @@ export class Game {
     // Both ground monsters and eagles are shootable; both tag their root group
     // with userData.monster, so one raycast list and one resolve path covers them.
     const targets = [...this.monsters, ...this.eagles].filter((m) => m.alive).map((m) => m.mesh);
-    const hit = this.player.tryShoot(targets);
+    const { fired, hit } = this.player.tryShoot(targets);
+    if (!fired) return;
+
+    // Fire feedback even on a miss: tracer to where the shot ends downrange.
+    const end = hit
+      ? hit.point
+      : this.camera
+          .getWorldDirection(this.tmpDir)
+          .multiplyScalar(CONFIG.weapon.range)
+          .add(this.camera.position);
+    this.weapon.fireEffects(end, hit !== null);
     if (!hit) return;
 
     let obj: THREE.Object3D | null = hit.object;
@@ -379,13 +419,18 @@ export class Game {
     this.player.touchPlaying = false;
     this.player.controls.unlock();
     if (result === 'won') {
-      this.hud.showVictory(this.buildings.filter((b) => b.alive).length, this.buildings.length);
+      this.hud.showVictory(
+        this.buildings.filter((b) => b.alive).length,
+        this.buildings.length,
+        LEVELS[this.levelIndex + 1]?.name ?? null
+      );
     } else {
       this.hud.showDefeat(reason ?? 'Defeated.');
     }
   }
 
-  private restart(): void {
+  /** Reset for a fresh round — optionally into a different level. */
+  private restart(levelIndex = this.levelIndex): void {
     for (const m of this.monsters) m.dispose(this.scene);
     for (const e of this.eagles) e.dispose(this.scene);
     for (const b of this.buildings) b.dispose(this.scene);
@@ -393,6 +438,8 @@ export class Game {
     this.eagles = [];
     this.buildings = [];
     this.stacks.clear();
+    if (levelIndex !== this.levelIndex) this.loadLevel(levelIndex);
+    else this.player.resetPose();
     this.phase = 'build';
     this.buildTimer = CONFIG.build.duration;
     this.buildBudget = CONFIG.build.budget;
@@ -400,7 +447,7 @@ export class Game {
     this.spawnedCount = 0;
     this.eaglesSpawned = 0;
     this.player.health = CONFIG.player.maxHealth;
-    this.hud.showStart();
+    this.hud.showStart(this.levelIndex);
   }
 
   private onResize(): void {
@@ -414,7 +461,9 @@ export class Game {
     requestAnimationFrame(this.tick);
     const dt = Math.min(this.clock.getDelta(), 0.05); // clamp to avoid tunneling on lag spikes
 
-    this.arenaUpdate(dt); // animate the waterfall every frame, in every phase
+    this.level.update(dt); // animate water/wind/snow/aurora every frame, in every phase
+    // Weapon feel + fading fire effects run in every phase too.
+    this.weapon.update(dt, this.player.speedNorm, this.player.bobPhase, this.player.active);
 
     if (this.phase === 'build') {
       this.player.update(dt);
@@ -436,6 +485,7 @@ export class Game {
       basesAlive: this.buildings.filter((b) => b.alive).length,
       basesTotal: this.buildings.length,
       monstersLeft: CONFIG.monster.count + CONFIG.eagle.count - this.kills,
+      levelName: LEVELS[this.levelIndex].name,
     });
 
     this.composer.render();
@@ -444,4 +494,14 @@ export class Game {
   start(): void {
     this.tick();
   }
+}
+
+/** `?level=arctic` (or `?level=1`) jumps straight to a level — handy for testing. */
+function initialLevelIndex(): number {
+  const param = new URLSearchParams(window.location.search).get('level');
+  if (!param) return 0;
+  const byName = LEVELS.findIndex((l) => l.name.toLowerCase() === param.toLowerCase());
+  if (byName >= 0) return byName;
+  const n = Number(param);
+  return Number.isInteger(n) && n >= 0 && n < LEVELS.length ? n : 0;
 }
