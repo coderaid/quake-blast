@@ -138,3 +138,77 @@ export function featherTexture(): THREE.CanvasTexture {
   );
   return _feather;
 }
+
+/**
+ * True for the cached singleton textures above. Level teardown disposes every
+ * texture a level created, but must leave these shared ones alone — they are
+ * reused by entities (rabbits, eagles, bricks) and by the next level.
+ */
+export function isSharedTexture(t: THREE.Texture): boolean {
+  return t === _bark || t === _leaf || t === _rock || t === _fur || t === _feather;
+}
+
+/** A mottled noise texture from a small palette — cheap ground/dirt/snow variation. */
+export function noiseTexture(palette: string[], size: number): THREE.CanvasTexture {
+  const c = document.createElement('canvas');
+  c.width = size;
+  c.height = size;
+  const ctx = c.getContext('2d')!;
+  ctx.fillStyle = palette[0];
+  ctx.fillRect(0, 0, size, size);
+  const blotches = size * 6;
+  for (let i = 0; i < blotches; i++) {
+    ctx.fillStyle = palette[Math.floor(Math.random() * palette.length)];
+    ctx.globalAlpha = 0.25 + Math.random() * 0.5;
+    const r = 1 + Math.random() * (size / 18);
+    ctx.beginPath();
+    ctx.arc(Math.random() * size, Math.random() * size, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  return new THREE.CanvasTexture(c);
+}
+
+/** Vertical sky gradient (zenith → mid → horizon) for a backside sky dome. */
+export function skyGradientTexture(zenith: string, mid: string, horizon: string): THREE.CanvasTexture {
+  const c = document.createElement('canvas');
+  c.width = 16;
+  c.height = 256;
+  const ctx = c.getContext('2d')!;
+  const g = ctx.createLinearGradient(0, 0, 0, 256);
+  g.addColorStop(0, zenith);
+  g.addColorStop(0.5, mid);
+  g.addColorStop(1, horizon);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 16, 256);
+  return new THREE.CanvasTexture(c);
+}
+
+/** A procedural water normal map: gentle bluish wave perturbations, tileable. */
+export function waterNormalsTexture(): THREE.CanvasTexture {
+  const s = 256;
+  const c = document.createElement('canvas');
+  c.width = s;
+  c.height = s;
+  const ctx = c.getContext('2d')!;
+  ctx.fillStyle = 'rgb(128,128,255)'; // flat normal
+  ctx.fillRect(0, 0, s, s);
+  for (let i = 0; i < 48; i++) {
+    const x = Math.random() * s;
+    const y = Math.random() * s;
+    const r = 10 + Math.random() * 45;
+    const ang = Math.random() * Math.PI * 2;
+    const nx = Math.round(128 + Math.cos(ang) * 60);
+    const ny = Math.round(128 + Math.sin(ang) * 60);
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, `rgb(${nx},${ny},255)`);
+    g.addColorStop(1, 'rgba(128,128,255,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
