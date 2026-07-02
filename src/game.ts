@@ -111,7 +111,7 @@ export class Game {
           }))
     );
     this.scene.add(this.player.controls.object);
-    this.weapon = new WeaponView(this.camera, this.scene, this.isTouch);
+    this.weapon = new WeaponView(this.camera, this.scene);
 
     this.loadLevel(initialLevelIndex());
 
@@ -467,8 +467,7 @@ export class Game {
     const dt = Math.min(this.clock.getDelta(), 0.05); // clamp to avoid tunneling on lag spikes
 
     this.level.update(dt); // animate water/wind/snow/aurora every frame, in every phase
-    // Weapon feel + fading fire effects run in every phase too.
-    this.weapon.update(dt, this.player.speedNorm, this.player.bobPhase, this.player.active);
+    this.weapon.update(dt); // fading fire effects run in every phase too
 
     if (this.phase === 'build') {
       this.player.update(dt);
