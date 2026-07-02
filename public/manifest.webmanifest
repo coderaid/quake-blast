@@ -4,7 +4,7 @@
   "description": "A wave-defense FPS across jungle and arctic arenas: build gold-brick bases, then blast the vampire rabbits and eagles that come for them.",
   "start_url": ".",
   "scope": ".",
-  "display": "fullscreen",
+  "display": "standalone",
   "orientation": "landscape",
   "background_color": "#0a0a0f",
   "theme_color": "#0a0a0f",
