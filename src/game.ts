@@ -365,6 +365,11 @@ export class Game {
 
     let playerHit = false;
 
+    // Once the ground horde is dead, eagles stop perching and press the attack —
+    // otherwise the last enemy can sit in a treetop and the wave never finishes.
+    const groundAlive = this.monsters.some((m) => m.alive);
+    for (const e of this.eagles) e.pressAttack = !groundAlive;
+
     // Rabbits and eagles share the same drive: aim at the nearest base, else the
     // player; each entity reports its own contact and carries its own dps/radius.
     for (const m of [...this.monsters, ...this.eagles]) {
@@ -462,8 +467,7 @@ export class Game {
     const dt = Math.min(this.clock.getDelta(), 0.05); // clamp to avoid tunneling on lag spikes
 
     this.level.update(dt); // animate water/wind/snow/aurora every frame, in every phase
-    // Weapon feel + fading fire effects run in every phase too.
-    this.weapon.update(dt, this.player.speedNorm, this.player.bobPhase, this.player.active);
+    this.weapon.update(dt); // fading fire effects run in every phase too
 
     if (this.phase === 'build') {
       this.player.update(dt);

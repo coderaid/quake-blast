@@ -38,6 +38,14 @@ export class Eagle {
   /** Candidate tree-top sit points, owned/updated by Game (empty until trees exist). */
   perches: THREE.Vector3[] = [];
 
+  /**
+   * Set by Game once the ground wave is dead: stop perching and press the
+   * attack. Without this the LAST enemy can be an eagle that keeps flying off
+   * to sit in trees — nothing moves, nothing is shootable near the player, and
+   * the wave can never be finished ("the game looks frozen at 1 monster left").
+   */
+  pressAttack = false;
+
   private state: State = 'soar';
   private baseY: number = CONFIG.eagle.cruiseHeight; // altitude goal, before flap bob
   private timer = 0; // counts down a perched stay
@@ -172,6 +180,12 @@ export class Eagle {
       bob = 0;
     }
 
+    // Ground wave dead → abandon any perch (mid-flight or seated) and re-engage.
+    if (this.pressAttack && this.state !== 'soar') {
+      this.state = 'soar';
+      this.perchTarget = null;
+    }
+
     // --- Perched: sitting on a tree, wings tucked up, not attacking -------------
     if (this.state === 'perched') {
       this.timer -= dt;
@@ -198,6 +212,7 @@ export class Eagle {
     // --- Soaring: maybe decide to peel off and perch ---------------------------
     this.cooldown -= dt;
     if (
+      !this.pressAttack &&
       this.cooldown <= 0 &&
       this.perches.length > 0 &&
       Math.random() < CONFIG.eagle.perchChance * dt

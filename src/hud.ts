@@ -28,6 +28,7 @@ export class Hud {
   private damageFlash: HTMLElement;
   private playCb: (() => void) | null = null;
   private levelCb: ((index: number) => void) | null = null;
+  private flashTimer: number | null = null;
 
   constructor(root: HTMLElement, private isTouch = false, private levelNames: string[] = []) {
     root.insertAdjacentHTML(
@@ -123,33 +124,50 @@ export class Hud {
     this.overlayEl.classList.toggle('hidden', locked);
   }
 
+  /** Write only when changed — this runs every frame, and redundant DOM writes cost. */
+  private setText(el: HTMLElement, text: string): void {
+    if (el.textContent !== text) el.textContent = text;
+  }
+
   update(s: HudState): void {
     if (s.phase === 'build') {
       const total = Math.max(0, Math.ceil(s.timeLeft));
       const secs = total % 60;
       const mins = Math.floor(total / 60);
-      this.bannerEl.textContent = `BUILD PHASE — ${mins}:${secs.toString().padStart(2, '0')}`;
+      this.setText(this.bannerEl, `BUILD PHASE — ${mins}:${secs.toString().padStart(2, '0')}`);
       this.bannerEl.style.color = secs <= 5 ? '#fc6' : '#6cf';
       const verb = this.isTouch ? 'tap FIRE to build' : 'click to build';
-      this.subEl.textContent =
+      this.setText(
+        this.subEl,
         s.budget > 0
           ? `${s.levelName} · Aim at the ground, ${verb} · ${s.budget} base${s.budget === 1 ? '' : 's'} left`
-          : `${s.levelName} · All bases placed — brace for the assault!`;
+          : `${s.levelName} · All bases placed — brace for the assault!`
+      );
     } else if (s.phase === 'assault') {
-      this.bannerEl.textContent = `DEFEND! — ${s.monstersLeft} monster${s.monstersLeft === 1 ? '' : 's'} left`;
+      this.setText(this.bannerEl, `DEFEND! — ${s.monstersLeft} monster${s.monstersLeft === 1 ? '' : 's'} left`);
       this.bannerEl.style.color = '#f66';
-      this.subEl.textContent = 'Shoot the monsters before they raze your bases';
+      this.setText(this.subEl, 'Shoot the monsters before they raze your bases');
     }
 
-    this.healthEl.textContent = `HP ${Math.ceil(s.health)}`;
+    this.setText(this.healthEl, `HP ${Math.ceil(s.health)}`);
     this.healthEl.style.color = s.health > 50 ? '#6f6' : s.health > 25 ? '#fc6' : '#f55';
-    this.basesEl.textContent = `BASES ${s.basesAlive}/${s.basesTotal}`;
+    this.setText(this.basesEl, `BASES ${s.basesAlive}/${s.basesTotal}`);
     this.basesEl.style.color = s.basesAlive === 0 ? '#f55' : '#6cf';
   }
 
+  /**
+   * Pulse the red damage vignette. Game calls this EVERY FRAME while the player
+   * is being chewed on, so it must be re-entrant-cheap: while a pulse is already
+   * showing this is a no-op — restarting a fullscreen CSS transition (and piling
+   * up a setTimeout) 60×/s visibly drops the frame rate on iPad Safari.
+   */
   flashDamage(): void {
+    if (this.flashTimer !== null) return;
     this.damageFlash.style.opacity = '1';
-    setTimeout(() => (this.damageFlash.style.opacity = '0'), 90);
+    this.flashTimer = window.setTimeout(() => {
+      this.damageFlash.style.opacity = '0';
+      this.flashTimer = null;
+    }, 110);
   }
 
   showStart(levelIndex: number): void {

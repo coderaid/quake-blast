@@ -63,7 +63,7 @@ export class Player {
   /** Touch-mode "in gameplay" flag (pointer lock's stand-in), set by Game. */
   touchPlaying = false;
 
-  /** Stride cycle + normalized speed, read by the weapon view to sync its bob. */
+  /** Stride cycle + normalized speed (drive the head-bob and speed-eased FOV). */
   bobPhase = 0;
   speedNorm = 0;
 
